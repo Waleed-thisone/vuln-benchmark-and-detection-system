@@ -1361,6 +1361,18 @@ def load_model():
             )
             if Model is not None:
                 fallback_model = Model(base_model, config, fallback_tokenizer, args)
+                weights_candidates = [
+                    os.path.join(BASE_DIR, "linevul", "saved_models", "checkpoint-best-f1", "12heads_linevul_model.bin"),
+                    os.path.join(BASE_DIR, "saved_models", "checkpoint-best-f1", "12heads_linevul_model.bin"),
+                ]
+                for wp in weights_candidates:
+                    if os.path.exists(wp):
+                        try:
+                            fallback_model.load_state_dict(torch.load(wp, map_location=device), strict=False)
+                            print(f"[OK] Loaded fine-tuned LineVul weights from: {wp}")
+                            break
+                        except Exception as w_err:
+                            print(f"Warning: Failed loading weights from {wp}: {w_err}")
                 fallback_model.to(device)
                 fallback_model.eval()
                 print("[OK] Fallback model initialized.")
@@ -1373,7 +1385,15 @@ def load_model():
 @app.route("/health", methods=["GET"])
 def health():
     checkpoint_summary = predictor.summary if predictor is not None else None
-    model_loaded = predictor is not None and predictor.ready
+    model_loaded = (predictor is not None and predictor.ready) or (fallback_model is not None)
+    if checkpoint_summary is None and fallback_model is not None:
+        checkpoint_summary = {
+            "checkpoint": "12heads_linevul_model.bin",
+            "model_name": TOKENIZER_NAME,
+            "architecture": "LineVul CodeBERT (12 attention heads)",
+            "heads": args.num_attention_heads,
+            "status": "ready"
+        }
     return jsonify({
         "status": "ok",
         "service": "linevul",

@@ -11,8 +11,14 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "Building and launching all services..."
-docker compose --env-file .env.docker up --build -d
+if [ -f .env.docker ]; then
+    set -a
+    source .env.docker
+    set +a
+fi
+
+echo "Launching all services..."
+docker compose --env-file .env.docker up -d || docker compose --env-file .env.docker up --build -d
 
 echo ""
 echo "========================================================"
@@ -20,7 +26,7 @@ echo " All services started successfully in background!"
 echo "========================================================"
 echo " - Frontend Web UI:  http://localhost:3000"
 echo " - Backend API Docs: http://localhost:8001/docs"
-echo " - LineVul Model:    http://localhost:5000"
+echo " - LineVul Model:    http://localhost:${LINEVUL_PORT:-5000}"
 echo " - PostgreSQL DB:    localhost:5432"
 echo ""
 echo " Tip: To view real-time logs, run: docker compose logs -f"

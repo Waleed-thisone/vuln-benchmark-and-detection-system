@@ -11,18 +11,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch CPU directly
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --default-timeout=120 torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy requirements and install python packages
 COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=120 -r requirements.txt
 
 # Copy application source and knowledge base assets
 COPY backend/ /app/
 COPY config.py /app/config.py
 COPY cwe_catalog.py /app/cwe_catalog.py
-COPY cve_index.npy /app/cve_index.npy
-COPY cve_index_meta.json /app/cve_index_meta.json
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8001

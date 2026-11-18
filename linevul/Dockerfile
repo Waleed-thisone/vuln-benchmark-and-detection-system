@@ -12,11 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch CPU directly
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --default-timeout=120 torch --index-url https://download.pytorch.org/whl/cpu
 
 # Copy dependencies list and install
 COPY linevul/requirements.docker.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=120 -r requirements.txt
 
 # Copy linevul codebase and shared files
 COPY linevul/ /app/

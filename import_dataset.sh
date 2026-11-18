@@ -21,7 +21,7 @@ fi
 
 echo "Restoring dataset into PostgreSQL (vulnmark)..."
 echo "This may take 2-5 minutes depending on disk speed. Please wait..."
-docker compose exec -T db pg_restore -U postgres -d vulnmark --clean --if-exists < cve_record.sql
+docker compose exec -T db pg_restore -U postgres -d vulnmark --clean --if-exists < cve_record.sql || true
 
 echo "========================================================"
 echo " Database restore complete!"

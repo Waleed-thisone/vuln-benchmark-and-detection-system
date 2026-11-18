@@ -117,7 +117,7 @@ const navigationItems = [
     title: "AI Tools",
     items: [
       {
-        title: "LineVul AI Scanner",
+        title: "SVD BERT",
         href: "/linevul",
         icon: ShieldAlert,
         iconName: "ShieldAlert",
@@ -262,11 +262,11 @@ export function DashboardSidebar() {
                         )}
                       />
                       {open && <span>{item.title}</span>}
-                      {open && item.href === "/linevul" && (
+                      {/*{open && item.href === "/linevul" && (
                         <span className="ml-auto text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30">
-                          AI
+                        AI
                         </span>
-                      )}
+                      )}*/}
                       {isActive && open && item.href !== "/linevul" && (
                         <ChevronRight className="h-3 w-3 ml-auto text-white/40" />
                       )}
