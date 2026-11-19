@@ -140,7 +140,13 @@ Located at [frontend/app/linevul/page.tsx](file:///Users/waleedgill/Desktop/proj
   * Secure Reference (`SAFE`: bounded `snprintf` with null check)
 * **Live Diagnostic Terminal:** Emulates live scanning telemetry (tokenization $\to$ attention analysis $\to$ CWE mapping $\to$ patch resolution).
 * **Line-Level Heatmap:** Highlights risky lines in color-graded red/amber with precise attention percentages.
-* **Export Utilities:** Instant download of `.patch` unified remediation files, JSON scan outputs, and formatted Markdown reports.
+* **ZIP Archive Batch Ingestion & Sequential Queue Scanner:**
+  * Ingests full project `.zip` archives directly in the browser.
+  * Filters and extracts exclusively C/C++ source code (`.c`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.hxx`) using native Web Standard `DecompressionStream`, automatically filtering out directories, macOS metadata (`__MACOSX/`), and non-code files.
+  * Constructs an asynchronous batch execution queue with live per-file scanning telemetry, status tracking (`Pending` $\to$ `Scanning` $\to$ `Completed`/`Error`), and individual file verdicts (`VULNERABLE` vs `SECURE`).
+  * Computes an **Overall Project Verdict** banner (`PROJECT VULNERABLE` vs `PROJECT SECURE`) with aggregated risk statistics.
+  * Interactive file selection: Clicking any file in the queue immediately loads its full source code, line-level attention heatmap, correlated CVE card, and remediation patch into the inspector.
+* **Export Utilities:** Instant download of `.patch` unified remediation files, individual JSON/Markdown reports, and complete multi-file batch inspection reports (`batch_scan_<archive>_report.json`).
 
 ---
 
@@ -294,7 +300,19 @@ docker compose --env-file .env.docker ps
    * The system outputs **"Code Verified Secure"** (0.0% vulnerability probability).
    * Explain that standard LineVul or SAST tools mistakenly flag this due to keyword matching, but our Semantic Guard correctly verified safety bounds.
 
-### Step 5: Demonstrate Integration with the Seniors' CVE Database
+### Step 5: Demonstrate Project ZIP Archive Batch Queue Scanning
+1. In the code editor card, click **"Upload file or ZIP"** (or drag and drop a `.zip` file such as `test_c_project.zip`).
+2. **Show Evaluators:**
+   * The system decompresses the archive entirely in the browser and automatically filters out non-code files (e.g. `README.txt`, `__MACOSX/`), isolating only C/C++ files (`.c`, `.cpp`, `.h`).
+   * The **Project Archive Batch Queue** card displays the file queue with live status tracking.
+3. Click **"Scan All Files"**.
+4. **Show Evaluators:**
+   * The queue processes each file sequentially: progress spinner moves row by row, delivering real-time individual verdicts (`VULNERABLE` with risk probability vs. `SECURE`).
+   * When all files complete, the **Overall Project Verdict** banner appears (`PROJECT VERDICT: VULNERABLE` with action alerts).
+   * Click any row in the queue to load that file's line-by-line heatmap and remediation patch in the viewer below.
+   * Click **"Export JSON"** to download the comprehensive multi-file audit report.
+
+### Step 6: Demonstrate Integration with the Seniors' CVE Database
 1. Copy the matched **CVE ID** (e.g., `CVE-2023-7256`).
 2. Click **"Database"** in the sidebar (the seniors' CVE Explorer).
 3. Search for the CVE ID to show that it exists in the 323,563-record PostgreSQL database with full CVSS metrics and historical impact.

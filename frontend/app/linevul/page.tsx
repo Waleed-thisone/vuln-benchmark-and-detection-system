@@ -32,10 +32,16 @@ import {
   Layers,
   Terminal,
   ChevronDown,
+  Play,
+  Square,
+  FileArchive,
+  Clock,
+  Trash2,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import Background from "@/components/background";
 import { getCweInfo, areCwesCompatible, normalizeCweId } from "@/lib/cwe";
+import { isZipFile, extractCppFilesFromZip } from "@/lib/zip";
 
 interface LineAttribution {
   line_no: number;
@@ -107,6 +113,16 @@ interface ScanResult {
     description: string;
     code_snippet?: string;
   }>;
+}
+
+export interface QueueItem {
+  id: string;
+  filename: string;
+  code: string;
+  size: number;
+  status: "pending" | "scanning" | "completed" | "error";
+  result?: ScanResult;
+  error?: string;
 }
 
 const FLAGGED_THRESHOLD = 0.35;
@@ -265,6 +281,35 @@ export default function LineVulPage() {
   const [patchExpanded, setPatchExpanded] = useState<boolean>(false);
   const [activeLogIndex, setActiveLogIndex] = useState<number>(0);
 
+  // Batch Zip Queue State
+  const [batchQueue, setBatchQueue] = useState<QueueItem[]>([]);
+  const [isBatchScanning, setIsBatchScanning] = useState<boolean>(false);
+  const [activeQueueIndex, setActiveQueueIndex] = useState<number>(-1);
+  const [batchZipName, setBatchZipName] = useState<string>("");
+  const abortBatchRef = useRef<boolean>(false);
+
+  const completedCount = useMemo(
+    () => batchQueue.filter((q) => q.status === "completed").length,
+    [batchQueue]
+  );
+  const vulnCount = useMemo(
+    () =>
+      batchQueue.filter((q) => q.status === "completed" && q.result?.vulnerable).length,
+    [batchQueue]
+  );
+  const secureCount = useMemo(
+    () =>
+      batchQueue.filter((q) => q.status === "completed" && q.result && !q.result.vulnerable)
+        .length,
+    [batchQueue]
+  );
+  const batchCompleted = useMemo(
+    () =>
+      batchQueue.length > 0 &&
+      batchQueue.every((q) => q.status === "completed" || q.status === "error"),
+    [batchQueue]
+  );
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const visualizerRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
@@ -320,9 +365,67 @@ export default function LineVulPage() {
     });
   };
 
+  const processZipFile = (file: File) => {
+    setActivePreset("");
+    toast({
+      title: "Processing ZIP Archive",
+      description: `Extracting C/C++ source files from ${file.name}...`,
+    });
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const buffer = event.target?.result as ArrayBuffer;
+        const extracted = await extractCppFilesFromZip(buffer);
+
+        if (extracted.length === 0) {
+          toast({
+            title: "No C/C++ Files Found",
+            description: "Archive contains no .c, .cpp, .cc, .h, or .hpp source files.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const queueItems: QueueItem[] = extracted.map((f, idx) => ({
+          id: `zip-${idx}-${f.filename}`,
+          filename: f.filename,
+          code: f.code,
+          size: f.size,
+          status: "pending",
+        }));
+
+        setBatchQueue(queueItems);
+        setBatchZipName(file.name);
+        setActiveQueueIndex(0);
+        setCode(extracted[0].code);
+        setFilename(extracted[0].filename);
+        setResults(null);
+
+        toast({
+          title: "ZIP Extracted Successfully",
+          description: `Found ${extracted.length} C/C++ source ${extracted.length === 1 ? "file" : "files"} in ${file.name}.`,
+        });
+      } catch (err: any) {
+        toast({
+          title: "ZIP Extraction Failed",
+          description: err.message || "Failed to parse ZIP archive.",
+          variant: "destructive",
+        });
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (isZipFile(file)) {
+      processZipFile(file);
+      e.target.value = "";
+      return;
+    }
 
     setFilename(file.name);
     setActivePreset("");
@@ -331,12 +434,16 @@ export default function LineVulPage() {
       setCode((event.target?.result as string) || "");
       setResults(null);
       setSearchQuery("");
+      setBatchQueue([]);
+      setBatchZipName("");
+      setActiveQueueIndex(-1);
       toast({
         title: "File Loaded",
         description: `Loaded ${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
       });
     };
     reader.readAsText(file);
+    e.target.value = "";
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -345,6 +452,11 @@ export default function LineVulPage() {
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
 
+    if (isZipFile(file)) {
+      processZipFile(file);
+      return;
+    }
+
     setFilename(file.name);
     setActivePreset("");
     const reader = new FileReader();
@@ -352,12 +464,135 @@ export default function LineVulPage() {
       setCode((event.target?.result as string) || "");
       setResults(null);
       setSearchQuery("");
+      setBatchQueue([]);
+      setBatchZipName("");
+      setActiveQueueIndex(-1);
       toast({
         title: "File Dropped",
         description: `Loaded ${file.name}`,
       });
     };
     reader.readAsText(file);
+  };
+
+  const selectQueueItem = (index: number) => {
+    const item = batchQueue[index];
+    if (!item) return;
+    setActiveQueueIndex(index);
+    setCode(item.code);
+    setFilename(item.filename);
+    setResults(item.result || null);
+  };
+
+  const handleRunBatchScan = async () => {
+    if (batchQueue.length === 0 || isBatchScanning) return;
+    setIsBatchScanning(true);
+    abortBatchRef.current = false;
+
+    for (let i = 0; i < batchQueue.length; i++) {
+      if (abortBatchRef.current) {
+        toast({ title: "Scan Stopped", description: "Batch scan paused." });
+        break;
+      }
+
+      // Skip already completed successfully
+      if (batchQueue[i].status === "completed" && batchQueue[i].result) {
+        continue;
+      }
+
+      const item = batchQueue[i];
+      setActiveQueueIndex(i);
+      setCode(item.code);
+      setFilename(item.filename);
+
+      // Set current file status to scanning
+      setBatchQueue((prev) =>
+        prev.map((q, idx) => (idx === i ? { ...q, status: "scanning" } : q))
+      );
+
+      try {
+        const response = await fetch("/api/linevul", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: item.code, filename: item.filename }),
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.error || `Inspection failed (HTTP ${response.status})`);
+        }
+
+        const scanResult: ScanResult = await response.json();
+
+        setBatchQueue((prev) =>
+          prev.map((q, idx) =>
+            idx === i ? { ...q, status: "completed", result: scanResult } : q
+          )
+        );
+        setResults(scanResult);
+        setServiceStatus("ready");
+      } catch (err: any) {
+        setBatchQueue((prev) =>
+          prev.map((q, idx) =>
+            idx === i ? { ...q, status: "error", error: err.message || "Scan failed" } : q
+          )
+        );
+      }
+    }
+
+    setIsBatchScanning(false);
+    toast({
+      title: "Batch Inspection Complete",
+      description: `Analyzed ${batchQueue.length} files in queue.`,
+    });
+  };
+
+  const handleStopBatchScan = () => {
+    abortBatchRef.current = true;
+    setIsBatchScanning(false);
+  };
+
+  const handleClearBatch = () => {
+    if (isBatchScanning) {
+      abortBatchRef.current = true;
+      setIsBatchScanning(false);
+    }
+    setBatchQueue([]);
+    setBatchZipName("");
+    setActiveQueueIndex(-1);
+    setResults(null);
+    toast({ title: "Queue Cleared", description: "Reset to single-file editor mode." });
+  };
+
+  const handleExportBatchReport = () => {
+    if (batchQueue.length === 0) return;
+    const summary = {
+      archive_name: batchZipName,
+      total_files: batchQueue.length,
+      scanned_at: new Date().toISOString(),
+      overall_verdict: batchQueue.some((q) => q.result?.vulnerable) ? "VULNERABLE" : "SECURE",
+      vulnerable_count: batchQueue.filter((q) => q.result?.vulnerable).length,
+      secure_count: batchQueue.filter((q) => q.result && !q.result.vulnerable).length,
+      files: batchQueue.map((q) => ({
+        filename: q.filename,
+        status: q.status,
+        verdict: q.result?.verdict || (q.status === "error" ? "ERROR" : "PENDING"),
+        probability: q.result?.probability ?? null,
+        risk_tier: q.result?.risk_tier ?? null,
+        detected_cwe: q.result?.detected_cwe ?? null,
+        mapped_cve: q.result?.mapped_cve?.cve_id ?? null,
+        hotspot_lines: q.result?.matched_lines ?? [],
+        error: q.error ?? null,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(summary, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `batch_scan_${batchZipName.replace(/[^a-zA-Z0-9_-]/g, "_")}_report.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "Report Exported", description: "Batch scan JSON report downloaded." });
   };
 
   const handleScan = async () => {
@@ -547,7 +782,7 @@ export default function LineVulPage() {
         {/* Header */}
         <header className="flex items-center justify-between pb-6 border-b border-white/[0.06]">
           <div>
-            <h1 className="text-3xl font-semibold text-white tracking-tight">LineVul Inspector</h1>
+            <h1 className="text-3xl font-semibold text-white tracking-tight">SVD BERT</h1>
             <p className="text-sm text-[#8A8A93] mt-1">Line-level neural vulnerability detection · CodeBERT + CVE Benchmark</p>
           </div>
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/[0.07] bg-[#151518] text-xs text-[#8A8A93]">
@@ -577,6 +812,218 @@ export default function LineVulPage() {
             ))}
           </div>
         </section>
+
+        {/* Batch Zip Queue & Project Verdict Section */}
+        {batchQueue.length > 0 && (
+          <section className="rounded-2xl border border-white/[0.08] bg-[#111113] p-5 space-y-4 shadow-xl">
+            {/* Batch Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/[0.06]">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400">
+                  <FileArchive className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold text-white tracking-tight">{batchZipName || "Project Archive Batch"}</h2>
+                    <span className="text-xs font-mono px-2 py-0.5 rounded-full border border-white/[0.08] bg-white/[0.03] text-[#A8B5C8]">
+                      {batchQueue.length} C/C++ {batchQueue.length === 1 ? "file" : "files"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#8A8A93] mt-0.5">
+                    {completedCount} of {batchQueue.length} scanned · {vulnCount} vulnerable · {secureCount} secure
+                  </p>
+                </div>
+              </div>
+
+              {/* Batch Actions */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {isBatchScanning ? (
+                  <button
+                    type="button"
+                    onClick={handleStopBatchScan}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-medium bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-colors"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                    <span>Stop Queue</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleRunBatchScan}
+                    disabled={isBatchScanning || isScanning}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold bg-white text-[#0A0A0B] hover:bg-[#EAEAEA] active:scale-[0.98] transition-all shadow-sm"
+                  >
+                    <Play className="h-3.5 w-3.5 fill-current" />
+                    <span>{completedCount === 0 ? "Scan All Files" : "Resume Queue"}</span>
+                  </button>
+                )}
+
+                {completedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleExportBatchReport}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-medium border border-white/[0.08] bg-white/[0.03] text-[#E8E8EC] hover:bg-white/[0.06] transition-colors"
+                  >
+                    <Download className="h-3.5 w-3.5 text-[#8A8A93]" />
+                    <span>Export JSON</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleClearBatch}
+                  disabled={isBatchScanning}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border border-white/[0.08] bg-white/[0.02] text-[#8A8A93] hover:text-white hover:bg-white/[0.06] transition-colors"
+                  title="Close queue and return to single file mode"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Clear</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Overall Project Verdict Banner (Shown when all files in queue have finished scanning) */}
+            {batchCompleted && (
+              <div
+                className={`p-4 rounded-xl border flex items-start gap-3.5 transition-all ${
+                  vulnCount > 0
+                    ? "bg-red-500/[0.08] border-red-500/30 text-red-100"
+                    : "bg-emerald-500/[0.08] border-emerald-500/30 text-emerald-100"
+                }`}
+              >
+                {vulnCount > 0 ? (
+                  <ShieldAlert className="h-6 w-6 text-red-400 shrink-0 mt-0.5" />
+                ) : (
+                  <ShieldCheck className="h-6 w-6 text-emerald-400 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm">
+                      {vulnCount > 0
+                        ? `PROJECT VERDICT: VULNERABLE (${vulnCount} of ${batchQueue.length} files flagged)`
+                        : `PROJECT VERDICT: SECURE (All ${batchQueue.length} files verified safe)`}
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                        vulnCount > 0
+                          ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                          : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      }`}
+                    >
+                      {vulnCount > 0 ? "ACTION REQUIRED" : "SAFE FOR DEPLOYMENT"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#A8B5C8] mt-1">
+                    {vulnCount > 0
+                      ? `Security scan detected high-risk code patterns. Click any flagged file in the queue below to inspect the line-level heatmap, correlated CVEs, and remediation patches.`
+                      : `Comprehensive 12-head CodeBERT analysis confirmed zero dangerous patterns across all submitted source files.`}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Queue Item Cards / Table */}
+            <div className="space-y-1.5 max-h-[320px] overflow-y-auto pr-1">
+              {batchQueue.map((item, idx) => {
+                const isActive = activeQueueIndex === idx;
+                const isScanningItem = item.status === "scanning";
+                const isDone = item.status === "completed";
+                const isErr = item.status === "error";
+                const isVuln = item.result?.vulnerable;
+
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => selectQueueItem(idx)}
+                    className={`group flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs cursor-pointer transition-all duration-150 ${
+                      isActive
+                        ? "border-violet-500/50 bg-violet-500/[0.08]"
+                        : "border-white/[0.06] bg-[#0E0E10] hover:border-white/[0.14] hover:bg-white/[0.03]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-[11px] font-mono text-[#555660] w-5 text-right shrink-0">
+                        {idx + 1}
+                      </span>
+
+                      {/* Status Icon */}
+                      <div className="shrink-0">
+                        {isScanningItem ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                        ) : isDone ? (
+                          isVuln ? (
+                            <ShieldAlert className="h-4 w-4 text-red-400" />
+                          ) : (
+                            <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                          )
+                        ) : isErr ? (
+                          <AlertTriangle className="h-4 w-4 text-rose-400" />
+                        ) : (
+                          <Clock className="h-4 w-4 text-[#555660]" />
+                        )}
+                      </div>
+
+                      <div className="min-w-0 truncate">
+                        <span className={`font-mono text-xs ${isActive ? "text-white font-medium" : "text-[#D0D0D5]"}`}>
+                          {item.filename}
+                        </span>
+                        <span className="text-[10px] text-[#71717A] ml-2 font-mono">
+                          ({(item.size / 1024).toFixed(1)} KB)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Verdict / Status Badges */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isScanningItem && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/10 border border-amber-500/20 text-amber-400 animate-pulse">
+                          Scanning…
+                        </span>
+                      )}
+
+                      {isDone && item.result && (
+                        <>
+                          {item.result.detected_cwe && (
+                            <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-mono border border-white/[0.07] bg-white/[0.02] text-[#A8B5C8]">
+                              {item.result.detected_cwe}
+                            </span>
+                          )}
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider ${
+                              isVuln
+                                ? "bg-red-500/15 text-red-400 border border-red-500/30"
+                                : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                            }`}
+                          >
+                            {isVuln
+                              ? `Vulnerable (${(item.result.probability * 100).toFixed(0)}%)`
+                              : "Secure"}
+                          </span>
+                        </>
+                      )}
+
+                      {isErr && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                          Error
+                        </span>
+                      )}
+
+                      {item.status === "pending" && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/[0.04] text-[#71717A]">
+                          Queued
+                        </span>
+                      )}
+
+                      <span className="text-[11px] text-violet-400 opacity-0 group-hover:opacity-100 transition-opacity ml-1">
+                        View →
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Main two-column grid */}
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -656,7 +1103,7 @@ export default function LineVulPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".c,.cpp,.h,.cc,.cxx,.hpp"
+                  accept=".c,.cpp,.h,.cc,.cxx,.hpp,.hxx,.zip"
                   onChange={handleFileUpload}
                   className="hidden"
                 />
@@ -670,8 +1117,8 @@ export default function LineVulPage() {
                   className="group flex items-center gap-2 text-xs font-medium text-[#8A8A93] hover:text-[#E8E8EC] px-3.5 py-2 rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/[0.12] transition-all duration-150"
                 >
                   <Upload className="h-3.5 w-3.5 text-[#8A8A93] group-hover:text-white transition-colors" />
-                  <span>Upload file</span>
-                  <span className="text-[10px] text-[#555660] font-mono">.c / .cpp</span>
+                  <span>Upload file or ZIP</span>
+                  <span className="text-[10px] text-[#555660] font-mono">.c / .cpp / .zip</span>
                 </button>
                 <button
                   type="button"

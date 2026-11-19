@@ -1556,7 +1556,7 @@ def analyze_source_code(func_code: str, filename: str = "snippet.c") -> dict:
             chunk_candidates.append((has_surf, start_idx, end_idx, chunk_text))
 
         chunk_candidates.sort(key=lambda x: x[0], reverse=True)
-        active_eval_chunks = chunk_candidates[:6]
+        active_eval_chunks = chunk_candidates[:32]
 
         chunk_probs = []
         for _, start_idx, end_idx, chunk_text in active_eval_chunks:

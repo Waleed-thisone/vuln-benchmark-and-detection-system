@@ -226,17 +226,20 @@ class LineVulPredictor:
                     continue
                 line_probs[file_ln] = max(line_probs.get(file_ln, 0.0), p)
 
-        # In large files, prioritize functions containing potential vulnerability surface and cap at top 8
-        if len(chunks) > 8:
+        # In large files, prioritize functions containing potential vulnerability surface and cap at top 32
+        MAX_FUNCTIONS_PER_FILE = 32
+        if len(chunks) > MAX_FUNCTIONS_PER_FILE:
             def surf_weight(item):
                 s = item[1]
                 w = 0
-                if re.search(r'\b(malloc|free|kfree|strcpy|strcat|sprintf|memcpy|memmove|gets)\b', s):
+                if re.search(r'\b(malloc|free|kfree|strcpy|strcat|sprintf|memcpy|memmove|gets|calloc|realloc|alloca|system|exec|popen)\b', s):
                     w += 10
-                if '[' in s or '->' in s or '*' in s:
+                if '[' in s or '->' in s or '*' in s or '&' in s:
                     w += 5
+                if 'if' in s or 'while' in s or 'for' in s:
+                    w += 2
                 return w
-            chunks = sorted(chunks, key=surf_weight, reverse=True)[:8]
+            chunks = sorted(chunks, key=surf_weight, reverse=True)[:MAX_FUNCTIONS_PER_FILE]
 
         for start, snippet in chunks:
             s_res = self.score(snippet)
